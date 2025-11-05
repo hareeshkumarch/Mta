@@ -124,6 +124,16 @@ table tbody tr:hover {
   backdrop-filter: blur(4px);
 }
 
+/* Hide external branding badges */
+[class*="emergent"],
+[class*="watermark"],
+[data-testid*="watermark"],
+a[href*="emergent"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+
 /* Focus styles */
 input:focus, select:focus, textarea:focus {
   outline: none;
