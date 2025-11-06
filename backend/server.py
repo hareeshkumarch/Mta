@@ -557,6 +557,237 @@ async def get_stats():
         "overall_roas": round(total_revenue / total_spend, 2) if total_spend > 0 else 0
     }
 
+@api_router.get("/advanced-metrics")
+async def get_advanced_metrics():
+    """Get advanced marketing metrics"""
+    journeys = await db.journeys.find({}, {"_id": 0}).to_list(1000)
+    
+    if not journeys:
+        return {}
+    
+    # Calculate channel-specific metrics
+    channel_metrics = {}
+    for journey in journeys:
+        for tp in journey["touchpoints"]:
+            channel = tp["channel"]
+            if channel not in channel_metrics:
+                channel_metrics[channel] = {
+                    "total_interactions": 0,
+                    "conversions": 0,
+                    "revenue": 0,
+                    "spend": 0
+                }
+            channel_metrics[channel]["total_interactions"] += 1
+            channel_metrics[channel]["spend"] += tp["cost"]
+        
+        # Count unique channels in journey
+        unique_channels = set(tp["channel"] for tp in journey["touchpoints"])
+        for channel in unique_channels:
+            if channel in channel_metrics:
+                channel_metrics[channel]["conversions"] += 1
+                channel_metrics[channel]["revenue"] += journey["conversion_value"] / len(unique_channels)
+    
+    # Format results with conversion rate and CPA
+    results = []
+    for channel, metrics in channel_metrics.items():
+        conversion_rate = (metrics["conversions"] / metrics["total_interactions"] * 100) if metrics["total_interactions"] > 0 else 0
+        cpa = metrics["spend"] / metrics["conversions"] if metrics["conversions"] > 0 else 0
+        
+        results.append({
+            "channel": channel,
+            "conversion_rate": round(conversion_rate, 2),
+            "cpa": round(cpa, 2),
+            "total_interactions": metrics["total_interactions"],
+            "conversions": metrics["conversions"],
+            "revenue": round(metrics["revenue"], 2),
+            "spend": round(metrics["spend"], 2)
+        })
+    
+    return sorted(results, key=lambda x: x["conversion_rate"], reverse=True)
+
+@api_router.get("/revenue-trends")
+async def get_revenue_trends():
+    """Get daily revenue trends"""
+    journeys = await db.journeys.find({}, {"_id": 0}).to_list(1000)
+    
+    if not journeys:
+        return []
+    
+    # Group by conversion date
+    date_revenue = {}
+    for journey in journeys:
+        date_str = journey["conversion_date"][:10]  # Get YYYY-MM-DD
+        if date_str not in date_revenue:
+            date_revenue[date_str] = {
+                "conversions": 0,
+                "revenue": 0,
+                "spend": 0
+            }
+        date_revenue[date_str]["conversions"] += 1
+        date_revenue[date_str]["revenue"] += journey["conversion_value"]
+        
+        for tp in journey["touchpoints"]:
+            date_revenue[date_str]["spend"] += tp["cost"]
+    
+    # Sort by date and format
+    sorted_dates = sorted(date_revenue.keys())
+    results = []
+    cumulative_revenue = 0
+    
+    for date in sorted_dates:
+        data = date_revenue[date]
+        cumulative_revenue += data["revenue"]
+        results.append({
+            "date": date,
+            "revenue": round(data["revenue"], 2),
+            "conversions": data["conversions"],
+            "spend": round(data["spend"], 2),
+            "cumulative_revenue": round(cumulative_revenue, 2),
+            "roas": round(data["revenue"] / data["spend"], 2) if data["spend"] > 0 else 0
+        })
+    
+    return results
+
+@api_router.get("/channel-synergy")
+async def get_channel_synergy():
+    """Get channel co-occurrence matrix for synergy analysis"""
+    journeys = await db.journeys.find({}, {"_id": 0}).to_list(1000)
+    
+    if not journeys:
+        return []
+    
+    # Build co-occurrence matrix
+    synergy_matrix = {}
+    
+    for journey in journeys:
+        channels = list(set(tp["channel"] for tp in journey["touchpoints"]))
+        
+        # Count co-occurrences
+        for i, ch1 in enumerate(channels):
+            if ch1 not in synergy_matrix:
+                synergy_matrix[ch1] = {}
+            
+            for ch2 in channels:
+                if ch2 not in synergy_matrix[ch1]:
+                    synergy_matrix[ch1][ch2] = 0
+                synergy_matrix[ch1][ch2] += 1
+    
+    # Format for heatmap
+    results = []
+    for ch1, connections in synergy_matrix.items():
+        for ch2, count in connections.items():
+            results.append({
+                "channel1": ch1,
+                "channel2": ch2,
+                "co_occurrences": count
+            })
+    
+    return results
+
+@api_router.get("/funnel-analysis")
+async def get_funnel_analysis():
+    """Get customer journey funnel by touchpoint count"""
+    journeys = await db.journeys.find({}, {"_id": 0}).to_list(1000)
+    
+    if not journeys:
+        return []
+    
+    # Group by touchpoint count
+    funnel_data = {}
+    for journey in journeys:
+        count = journey["touchpoint_count"]
+        if count not in funnel_data:
+            funnel_data[count] = {
+                "journeys": 0,
+                "revenue": 0,
+                "avg_conversion_value": 0
+            }
+        funnel_data[count]["journeys"] += 1
+        funnel_data[count]["revenue"] += journey["conversion_value"]
+    
+    # Calculate averages and format
+    results = []
+    for touchpoint_count in sorted(funnel_data.keys()):
+        data = funnel_data[touchpoint_count]
+        results.append({
+            "touchpoint_count": touchpoint_count,
+            "journeys": data["journeys"],
+            "revenue": round(data["revenue"], 2),
+            "avg_conversion_value": round(data["revenue"] / data["journeys"], 2)
+        })
+    
+    return results
+
+@api_router.get("/top-performers")
+async def get_top_performers():
+    """Get top and bottom performing channels across all models"""
+    journeys = await db.journeys.find({}, {"_id": 0}).to_list(1000)
+    
+    if not journeys:
+        return {"top": [], "bottom": []}
+    
+    # Get linear attribution as a fair baseline
+    linear_results = calculate_linear(journeys)
+    
+    # Sort by attributed revenue
+    sorted_channels = sorted(linear_results, key=lambda x: x.attributed_revenue, reverse=True)
+    
+    return {
+        "top": [{"channel": ch.channel, "revenue": ch.attributed_revenue, "roas": ch.roas} 
+                for ch in sorted_channels[:5]],
+        "bottom": [{"channel": ch.channel, "revenue": ch.attributed_revenue, "roas": ch.roas} 
+                   for ch in sorted_channels[-5:]]
+    }
+
+@api_router.get("/attribution-variance")
+async def get_attribution_variance():
+    """Analyze how much attribution varies across different models"""
+    journeys = await db.journeys.find({}, {"_id": 0}).to_list(1000)
+    
+    if not journeys:
+        return []
+    
+    # Calculate attribution for all models
+    models_data = {
+        "First-Touch": calculate_first_touch(journeys),
+        "Last-Touch": calculate_last_touch(journeys),
+        "Linear": calculate_linear(journeys),
+        "Time Decay": calculate_time_decay(journeys),
+        "U-Shaped": calculate_position_based(journeys),
+        "W-Shaped": calculate_w_shaped(journeys)
+    }
+    
+    # Build channel variance data
+    all_channels = set()
+    for model_results in models_data.values():
+        for result in model_results:
+            all_channels.add(result.channel)
+    
+    variance_data = []
+    for channel in all_channels:
+        revenues = []
+        for model_name, results in models_data.items():
+            for result in results:
+                if result.channel == channel:
+                    revenues.append(result.attributed_revenue)
+                    break
+        
+        if revenues:
+            avg_revenue = sum(revenues) / len(revenues)
+            variance = sum((r - avg_revenue) ** 2 for r in revenues) / len(revenues)
+            std_dev = variance ** 0.5
+            
+            variance_data.append({
+                "channel": channel,
+                "avg_revenue": round(avg_revenue, 2),
+                "std_dev": round(std_dev, 2),
+                "coefficient_of_variation": round((std_dev / avg_revenue * 100) if avg_revenue > 0 else 0, 2),
+                "min_revenue": round(min(revenues), 2),
+                "max_revenue": round(max(revenues), 2)
+            })
+    
+    return sorted(variance_data, key=lambda x: x["coefficient_of_variation"], reverse=True)
+
 # Include the router in the main app
 app.include_router(api_router)
 
